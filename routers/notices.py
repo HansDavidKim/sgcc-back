@@ -7,12 +7,6 @@ from dotenv import load_dotenv
 from pathlib import Path
 import os
 
-class Notice(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    title: str = Field(index=True)
-    content: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
@@ -33,28 +27,62 @@ def created_db_and_tables():
 
 router = APIRouter()
 
-@router.post("/notices", response_model=Notice)
-def create_notice(notice: Notice, session: SessionDep) -> Notice:
-    session.add(notice)
-    session.commit()
-    session.refresh(notice)
-    return notice
+class NoticeBase(SQLModel):
+    title: str = Field(index=True)
+    author: str | None = Field(default=None, index=True)
+    content: str | None = Field(default=None, index=True)
+    create_at: datetime | None = Field(default=None, index=True)
 
-@router.get("/notices", response_model=Notice)
+class Notice(NoticeBase, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+
+class NoticePublic(NoticeBase):
+    id: int
+
+class NoticeCreate(NoticeBase):
+    pass
+
+class NoticeUpdate(NoticeBase):
+    title: str | None = None
+    author: str | None = None
+    content: str | None = None
+
+@router.post("/notices/", response_model = NoticePublic)
+def create_notice(notice: NoticeCreate, session: SessionDep):
+    db_notice = Notice.model_validate(notice)
+    session.add(db_notice)
+    session.commit()
+    session.refresh(db_notice)
+    return db_notice
+
+@router.get("/notices/", response_model=list[NoticePublic])
 def read_notices(
     session: SessionDep,
-    offset: int = 0,
-    limit: Annotated[int, Query(le=100)] = 100,
-) -> list[Notice]:
-    notices = session.exec(select(Notice).offset(offset).limit(limit)).all()
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(le=100)] = 10
+):
+    offset = (page - 1) * size
+    notices = session.exec(select(Notice).offset(offset).limit(size)).all()
     return notices
 
-@router.get("/notices/{notice_id}", response_model=Notice)
-def read_notice(notice_id: int, session: SessionDep) -> Notice:
+@router.get("/notices/{notice_id}", response_model=NoticePublic)
+def read_notice(notice_id: int, session: SessionDep):
     notice = session.get(Notice, notice_id)
     if not notice:
         raise HTTPException(status_code=404, detail="Notice not found")
     return notice
+
+@router.patch("/notices/{notice_id}", response_model=NoticePublic)
+def update_notice(notice_id: int, notice: NoticeUpdate, session: SessionDep):
+    notice_db = session.get(Notice, notice_id)
+    if not notice_db:
+        raise HTTPException(status_code=404, detal="Notice not found")
+    notice_data = notice.model_dump(exclude_unset=True)
+    notice_db.sqlmodel_update(notice_data)
+    session.add(notice_db)
+    session.commit()
+    session.refresh(notice_db)
+    return notice_db
 
 @router.delete("/notices/{notice_id}")
 def delete_notice(notice_id: int, session: SessionDep):
